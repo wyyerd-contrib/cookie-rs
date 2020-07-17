@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use time::{Duration, OffsetDateTime};
 
 #[cfg(feature = "signed")] use crate::secure::SignedJar;
@@ -23,7 +21,7 @@ use crate::Cookie;
 /// ```rust
 /// use cookie::{Cookie, CookieJar};
 ///
-/// let mut jar = CookieJar::new();
+/// let jar = CookieJar::new();
 /// jar.add_original(Cookie::new("name", "value"));
 /// jar.add_original(Cookie::new("second", "another"));
 /// ```
@@ -34,12 +32,12 @@ use crate::Cookie;
 ///
 /// ```rust
 /// # use cookie::{Cookie, CookieJar};
-/// let mut jar = CookieJar::new();
+/// let jar = CookieJar::new();
 /// jar.add(Cookie::new("a", "one"));
 /// jar.add(Cookie::new("b", "two"));
 ///
-/// assert_eq!(jar.get("a").map(|c| c.value()), Some("one"));
-/// assert_eq!(jar.get("b").map(|c| c.value()), Some("two"));
+/// assert_eq!(jar.get("a").unwrap().value(), "one");
+/// assert_eq!(jar.get("b").unwrap().value(), "two");
 ///
 /// jar.remove(Cookie::named("b"));
 /// assert!(jar.get("b").is_none());
@@ -61,7 +59,7 @@ use crate::Cookie;
 ///
 /// ```rust
 /// # use cookie::{Cookie, CookieJar};
-/// let mut jar = CookieJar::new();
+/// let jar = CookieJar::new();
 ///
 /// // original cookies don't affect the delta
 /// jar.add_original(Cookie::new("original", "value"));
@@ -80,10 +78,58 @@ use crate::Cookie;
 /// jar.remove(Cookie::named("a"));
 /// assert_eq!(jar.delta().count(), 2);
 /// ```
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug)]
 pub struct CookieJar {
-    original_cookies: HashSet<DeltaCookie>,
-    delta_cookies: HashSet<DeltaCookie>,
+    original_cookies: dashmap::DashMap<DeltaCookie, ()>,
+    delta_cookies: dashmap::DashMap<DeltaCookie, ()>,
+}
+
+/// A cookie crumb.
+#[derive(Clone)]
+pub struct CookieCrumb(dashmap::ElementGuard<DeltaCookie, ()>);
+
+impl CookieCrumb {
+    /// Gets the entire `Cookie`.
+    pub fn into_cookie(self) -> Cookie<'static> {
+        self.0.key().cookie.clone()
+    }
+}
+
+impl std::ops::Deref for CookieCrumb {
+    type Target = Cookie<'static>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.key().cookie
+    }
+}
+
+use std::hash::{Hash, Hasher};
+use std::borrow::Borrow;
+
+impl std::fmt::Debug for CookieCrumb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.key().fmt(f)
+    }
+}
+
+impl PartialEq for CookieCrumb {
+    fn eq(&self, other: &Self) -> bool {
+        self.name() == other.name()
+    }
+}
+
+impl Eq for CookieCrumb {  }
+
+impl Hash for CookieCrumb {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name().hash(state);
+    }
+}
+
+impl Borrow<str> for CookieCrumb {
+    fn borrow(&self) -> &str {
+        self.name()
+    }
 }
 
 impl CookieJar {
@@ -109,17 +155,17 @@ impl CookieJar {
     /// ```rust
     /// use cookie::{CookieJar, Cookie};
     ///
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     /// assert!(jar.get("name").is_none());
     ///
     /// jar.add(Cookie::new("name", "value"));
-    /// assert_eq!(jar.get("name").map(|c| c.value()), Some("value"));
+    /// assert_eq!(jar.get("name").unwrap().value(), "value");
     /// ```
-    pub fn get(&self, name: &str) -> Option<&Cookie<'static>> {
+    pub fn get(&self, name: &str) -> Option<CookieCrumb> {
         self.delta_cookies
             .get(name)
             .or_else(|| self.original_cookies.get(name))
-            .and_then(|c| if !c.removed { Some(&c.cookie) } else { None })
+            .and_then(|c| if !c.key().removed { Some(CookieCrumb(c)) } else { None })
     }
 
     /// Adds an "original" `cookie` to this jar. If an original cookie with the
@@ -138,17 +184,17 @@ impl CookieJar {
     /// ```rust
     /// use cookie::{CookieJar, Cookie};
     ///
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     /// jar.add_original(Cookie::new("name", "value"));
     /// jar.add_original(Cookie::new("second", "two"));
     ///
-    /// assert_eq!(jar.get("name").map(|c| c.value()), Some("value"));
-    /// assert_eq!(jar.get("second").map(|c| c.value()), Some("two"));
+    /// assert_eq!(jar.get("name").unwrap().value(), "value");
+    /// assert_eq!(jar.get("second").unwrap().value(), "two");
     /// assert_eq!(jar.iter().count(), 2);
     /// assert_eq!(jar.delta().count(), 0);
     /// ```
-    pub fn add_original(&mut self, cookie: Cookie<'static>) {
-        self.original_cookies.replace(DeltaCookie::added(cookie));
+    pub fn add_original(&self, cookie: Cookie<'static>) {
+        self.original_cookies.replace(DeltaCookie::added(cookie), ());
     }
 
     /// Adds `cookie` to this jar. If a cookie with the same name already
@@ -159,17 +205,17 @@ impl CookieJar {
     /// ```rust
     /// use cookie::{CookieJar, Cookie};
     ///
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     /// jar.add(Cookie::new("name", "value"));
     /// jar.add(Cookie::new("second", "two"));
     ///
-    /// assert_eq!(jar.get("name").map(|c| c.value()), Some("value"));
-    /// assert_eq!(jar.get("second").map(|c| c.value()), Some("two"));
+    /// assert_eq!(jar.get("name").unwrap().value(), "value");
+    /// assert_eq!(jar.get("second").unwrap().value(), "two");
     /// assert_eq!(jar.iter().count(), 2);
     /// assert_eq!(jar.delta().count(), 2);
     /// ```
-    pub fn add(&mut self, cookie: Cookie<'static>) {
-        self.delta_cookies.replace(DeltaCookie::added(cookie));
+    pub fn add(&self, cookie: Cookie<'static>) {
+        self.delta_cookies.replace(DeltaCookie::added(cookie), ());
     }
 
     /// Removes `cookie` from this jar. If an _original_ cookie with the same
@@ -194,7 +240,7 @@ impl CookieJar {
     /// use time::Duration;
     ///
     /// # fn main() {
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     ///
     /// // Assume this cookie originally had a path of "/" and domain of "a.b".
     /// jar.add_original(Cookie::new("name", "value"));
@@ -215,19 +261,19 @@ impl CookieJar {
     /// ```rust
     /// use cookie::{CookieJar, Cookie};
     ///
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     /// jar.add(Cookie::new("name", "value"));
     /// assert_eq!(jar.delta().count(), 1);
     ///
     /// jar.remove(Cookie::named("name"));
     /// assert_eq!(jar.delta().count(), 0);
     /// ```
-    pub fn remove(&mut self, mut cookie: Cookie<'static>) {
-        if self.original_cookies.contains(cookie.name()) {
+    pub fn remove(&self, mut cookie: Cookie<'static>) {
+        if self.original_cookies.contains_key(cookie.name()) {
             cookie.set_value("");
             cookie.set_max_age(Duration::seconds(0));
             cookie.set_expires(OffsetDateTime::now_utc() - Duration::days(365));
-            self.delta_cookies.replace(DeltaCookie::removed(cookie));
+            self.delta_cookies.replace(DeltaCookie::removed(cookie), ());
         } else {
             self.delta_cookies.remove(cookie.name());
         }
@@ -243,7 +289,7 @@ impl CookieJar {
     /// ```rust
     /// use cookie::{CookieJar, Cookie};
     ///
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     ///
     /// // Only original cookies will remain after calling `reset_delta`.
     /// jar.add_original(Cookie::new("name", "value"));
@@ -255,19 +301,19 @@ impl CookieJar {
     ///
     /// // All is normal.
     /// assert_eq!(jar.get("name"), None);
-    /// assert_eq!(jar.get("language").map(Cookie::value), Some("C++"));
+    /// assert_eq!(jar.get("language").unwrap().value(), "C++");
     /// assert_eq!(jar.iter().count(), 1);
     /// assert_eq!(jar.delta().count(), 2);
     ///
     /// // Resetting undoes delta operations.
     /// jar.reset_delta();
-    /// assert_eq!(jar.get("name").map(Cookie::value), Some("value"));
-    /// assert_eq!(jar.get("language").map(Cookie::value), Some("Rust"));
+    /// assert_eq!(jar.get("name").unwrap().value(), "value");
+    /// assert_eq!(jar.get("language").unwrap().value(), "Rust");
     /// assert_eq!(jar.iter().count(), 2);
     /// assert_eq!(jar.delta().count(), 0);
     /// ```
-    pub fn reset_delta(&mut self) {
-        self.delta_cookies = HashSet::new();
+    pub fn reset_delta(&self) {
+        self.delta_cookies.clear();
     }
 
     /// Removes `cookie` from this jar completely. This method differs from
@@ -287,7 +333,7 @@ impl CookieJar {
     /// use time::Duration;
     ///
     /// # fn main() {
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     ///
     /// // Add an original cookie and a new cookie.
     /// jar.add_original(Cookie::new("name", "value"));
@@ -306,7 +352,7 @@ impl CookieJar {
     /// assert_eq!(jar.iter().count(), 0);
     /// # }
     /// ```
-    pub fn force_remove<'a>(&mut self, cookie: Cookie<'a>) {
+    pub fn force_remove(&self, cookie: Cookie) {
         self.original_cookies.remove(cookie.name());
         self.delta_cookies.remove(cookie.name());
     }
@@ -320,7 +366,7 @@ impl CookieJar {
     /// ```rust
     /// use cookie::{CookieJar, Cookie};
     ///
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     /// jar.add_original(Cookie::new("name", "value"));
     /// jar.add_original(Cookie::new("second", "two"));
     ///
@@ -347,7 +393,7 @@ impl CookieJar {
     /// ```rust
     /// use cookie::{CookieJar, Cookie};
     ///
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     ///
     /// jar.add_original(Cookie::new("name", "value"));
     /// jar.add_original(Cookie::new("second", "two"));
@@ -372,8 +418,9 @@ impl CookieJar {
     /// ```
     pub fn iter(&self) -> Iter {
         Iter {
-            delta_cookies: self.delta_cookies.iter()
-                .chain(self.original_cookies.difference(&self.delta_cookies)),
+            delta_cookie: &self.delta_cookies,
+            delta_cookies_iter: self.delta_cookies.iter(),
+            original_cookies_iter: self.original_cookies.iter(),
         }
     }
 
@@ -393,7 +440,7 @@ impl CookieJar {
     /// let key = Key::generate();
     ///
     /// // Add a private (signed + encrypted) cookie.
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     /// jar.private(&key).add(Cookie::new("private", "text"));
     ///
     /// // The cookie's contents are encrypted.
@@ -410,7 +457,7 @@ impl CookieJar {
     /// ```
     #[cfg(feature = "private")]
     #[cfg_attr(nightly, doc(cfg(feature = "private")))]
-    pub fn private(&mut self, key: &Key) -> PrivateJar {
+    pub fn private(&self, key: &Key) -> PrivateJar {
         PrivateJar::new(self, key)
     }
 
@@ -429,7 +476,7 @@ impl CookieJar {
     /// let key = Key::generate();
     ///
     /// // Add a signed cookie.
-    /// let mut jar = CookieJar::new();
+    /// let jar = CookieJar::new();
     /// jar.signed(&key).add(Cookie::new("signed", "text"));
     ///
     /// // The cookie's contents are signed but still in plaintext.
@@ -447,42 +494,52 @@ impl CookieJar {
     /// ```
     #[cfg(feature = "signed")]
     #[cfg_attr(nightly, doc(cfg(feature = "signed")))]
-    pub fn signed(&mut self, key: &Key) -> SignedJar {
+    pub fn signed(&self, key: &Key) -> SignedJar {
         SignedJar::new(self, key)
     }
 }
 
-use std::collections::hash_set::Iter as HashSetIter;
+// use std::collections::hash_set::Iter as HashSetIter;
 
 /// Iterator over the changes to a cookie jar.
-pub struct Delta<'a> {
-    iter: HashSetIter<'a, DeltaCookie>,
+pub struct Delta {
+    iter: dashmap::Iter<DeltaCookie, ()>,
 }
 
-impl<'a> Iterator for Delta<'a> {
-    type Item = &'a Cookie<'static>;
+impl Iterator for Delta {
+    type Item = CookieCrumb;
 
-    fn next(&mut self) -> Option<&'a Cookie<'static>> {
-        self.iter.next().map(|c| &c.cookie)
+    fn next(&mut self) -> Option<CookieCrumb> {
+        self.iter.next().map(CookieCrumb)
     }
 }
 
-use std::collections::hash_set::Difference;
-use std::collections::hash_map::RandomState;
-use std::iter::Chain;
-
+// use std::collections::hash_set::Difference;
+// use std::collections::hash_map::RandomState;
+// use std::iter::Chain;
+//
 /// Iterator over all of the cookies in a jar.
 pub struct Iter<'a> {
-    delta_cookies: Chain<HashSetIter<'a, DeltaCookie>, Difference<'a, DeltaCookie, RandomState>>,
+    delta_cookie: &'a dashmap::DashMap<DeltaCookie, ()>,
+    delta_cookies_iter: dashmap::Iter<DeltaCookie, ()>,
+    original_cookies_iter: dashmap::Iter<DeltaCookie, ()>,
 }
 
 impl<'a> Iterator for Iter<'a> {
-    type Item = &'a Cookie<'static>;
+    type Item = CookieCrumb;
 
-    fn next(&mut self) -> Option<&'a Cookie<'static>> {
-        for cookie in self.delta_cookies.by_ref() {
-            if !cookie.removed {
-                return Some(&*cookie);
+    fn next(&mut self) -> Option<CookieCrumb> {
+        for cookie in self.delta_cookies_iter.by_ref() {
+            if !cookie.key().removed {
+                return Some(CookieCrumb(cookie));
+            }
+        }
+
+        for cookie in self.original_cookies_iter.by_ref() {
+            if !self.delta_cookie.contains_key(cookie.key().name()) {
+                if !cookie.key().removed {
+                    return Some(CookieCrumb(cookie));
+                }
             }
         }
 
@@ -496,9 +553,15 @@ mod test {
     use crate::Cookie;
 
     #[test]
+    fn cookie_jar_is_send_syncv() {
+        fn is_send_sync<T: Send + Sync>() {}
+        is_send_sync::<CookieJar>();
+    }
+
+    #[test]
     #[allow(deprecated)]
     fn simple() {
-        let mut c = CookieJar::new();
+        let c = CookieJar::new();
 
         c.add(Cookie::new("test", ""));
         c.add(Cookie::new("test2", ""));
@@ -529,31 +592,31 @@ mod test {
     #[cfg(all(feature = "signed", feature = "private"))]
     fn iter() {
         let key = crate::Key::generate();
-        let mut c = CookieJar::new();
+        let jar = CookieJar::new();
 
-        c.add_original(Cookie::new("original", "original"));
+        jar.add_original(Cookie::new("original", "original"));
 
-        c.add(Cookie::new("test", "test"));
-        c.add(Cookie::new("test2", "test2"));
-        c.add(Cookie::new("test3", "test3"));
-        assert_eq!(c.iter().count(), 4);
+        jar.add(Cookie::new("test", "test"));
+        jar.add(Cookie::new("test2", "test2"));
+        jar.add(Cookie::new("test3", "test3"));
+        assert_eq!(jar.iter().count(), 4);
 
-        c.signed(&key).add(Cookie::new("signed", "signed"));
-        c.private(&key).add(Cookie::new("encrypted", "encrypted"));
-        assert_eq!(c.iter().count(), 6);
+        jar.signed(&key).add(Cookie::new("signed", "signed"));
+        jar.private(&key).add(Cookie::new("encrypted", "encrypted"));
+        assert_eq!(jar.iter().count(), 6);
 
-        c.remove(Cookie::named("test"));
-        assert_eq!(c.iter().count(), 5);
+        jar.remove(Cookie::named("test"));
+        assert_eq!(jar.iter().count(), 5);
 
-        c.remove(Cookie::named("signed"));
-        c.remove(Cookie::named("test2"));
-        assert_eq!(c.iter().count(), 3);
+        jar.remove(Cookie::named("signed"));
+        jar.remove(Cookie::named("test2"));
+        assert_eq!(jar.iter().count(), 3);
 
-        c.add(Cookie::new("test2", "test2"));
-        assert_eq!(c.iter().count(), 4);
+        jar.add(Cookie::new("test2", "test2"));
+        assert_eq!(jar.iter().count(), 4);
 
-        c.remove(Cookie::named("test2"));
-        assert_eq!(c.iter().count(), 3);
+        jar.remove(Cookie::named("test2"));
+        assert_eq!(jar.iter().count(), 3);
     }
 
     #[test]
@@ -561,7 +624,7 @@ mod test {
         use std::collections::HashMap;
         use time::Duration;
 
-        let mut c = CookieJar::new();
+        let c = CookieJar::new();
 
         c.add_original(Cookie::new("original", "original"));
         c.add_original(Cookie::new("original1", "original1"));
@@ -577,7 +640,7 @@ mod test {
         assert_eq!(c.delta().count(), 4);
 
         let names: HashMap<_, _> = c.delta()
-            .map(|c| (c.name(), c.max_age()))
+            .map(|c| (c.clone(), c.max_age()))
             .collect();
 
         assert!(names.get("test2").unwrap().is_none());
@@ -588,7 +651,7 @@ mod test {
 
     #[test]
     fn replace_original() {
-        let mut jar = CookieJar::new();
+        let jar = CookieJar::new();
         jar.add_original(Cookie::new("original_a", "a"));
         jar.add_original(Cookie::new("original_b", "b"));
         assert_eq!(jar.get("original_a").unwrap().value(), "a");
@@ -599,7 +662,7 @@ mod test {
 
     #[test]
     fn empty_delta() {
-        let mut jar = CookieJar::new();
+        let jar = CookieJar::new();
         jar.add(Cookie::new("name", "val"));
         assert_eq!(jar.delta().count(), 1);
 
@@ -621,7 +684,7 @@ mod test {
 
     #[test]
     fn add_remove_add() {
-        let mut jar = CookieJar::new();
+        let jar = CookieJar::new();
         jar.add_original(Cookie::new("name", "val"));
         assert_eq!(jar.delta().count(), 0);
 
@@ -649,7 +712,7 @@ mod test {
 
     #[test]
     fn replace_remove() {
-        let mut jar = CookieJar::new();
+        let jar = CookieJar::new();
         jar.add_original(Cookie::new("name", "val"));
         assert_eq!(jar.delta().count(), 0);
 
@@ -663,7 +726,7 @@ mod test {
 
     #[test]
     fn remove_with_path() {
-        let mut jar = CookieJar::new();
+        let jar = CookieJar::new();
         jar.add_original(Cookie::build("name", "val").finish());
         assert_eq!(jar.iter().count(), 1);
         assert_eq!(jar.delta().count(), 0);

@@ -105,7 +105,7 @@ use time::{Duration, OffsetDateTime, UtcOffset};
 use crate::parse::parse_cookie;
 pub use crate::parse::ParseError;
 pub use crate::builder::CookieBuilder;
-pub use crate::jar::{CookieJar, Delta, Iter};
+pub use crate::jar::{CookieJar, CookieCrumb, Delta, Iter};
 pub use crate::draft::*;
 
 #[derive(Debug, Clone)]
