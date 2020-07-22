@@ -84,6 +84,25 @@ pub struct CookieJar {
     delta_cookies: dashmap::DashMap<DeltaCookie, ()>,
 }
 
+impl Clone for CookieJar {
+    fn clone(&self) -> Self {
+        let jar = CookieJar {
+            original_cookies: dashmap::DashMap::with_capacity(self.original_cookies.len()),
+            delta_cookies: dashmap::DashMap::with_capacity(self.delta_cookies.len()),
+        };
+
+        for cookie in self.original_cookies.iter() {
+            jar.original_cookies.insert(cookie.key().clone(), ());
+        }
+
+        for cookie in self.delta_cookies.iter() {
+            jar.delta_cookies.insert(cookie.key().clone(), ());
+        }
+
+        jar
+    }
+}
+
 /// A cookie crumb.
 #[derive(Clone)]
 pub struct CookieCrumb(dashmap::ElementGuard<DeltaCookie, ()>);
